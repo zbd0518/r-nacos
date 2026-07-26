@@ -89,6 +89,9 @@ impl RaftIndexInnerManager {
     }
 
     pub async fn write_index(&mut self, index: RaftIndexDto) -> anyhow::Result<()> {
+        if self.last_applied_log < 10 {
+            self.write_last_applied_log(self.last_applied_log).await?;
+        }
         self.raft_index = index;
         self.file.seek(std::io::SeekFrom::Start(8)).await?;
         let mut buf = Vec::new();

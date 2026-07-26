@@ -318,13 +318,17 @@ impl LogInnerManager {
             return Ok(LogWriteMark::Failure);
         }
         let end_index = self.get_end_index();
-        if end_index != record.index {
+        if end_index < record.index {
             log::error!(
-                "logfile index != record.index,{},{}",
+                "logfile index < record.index,{},{}",
                 end_index,
                 record.index
             );
             return Ok(LogWriteMark::IndexEqualError);
+        }
+        else if end_index > record.index {
+
+            self.strip_log_to(record.index).await.ok();
         }
         let mut buf = Vec::new();
         let mut writer = Writer::new(&mut buf);
@@ -374,6 +378,11 @@ impl LogInnerManager {
             //log::warn!("the data is not enough to be strip");
             return Ok(());
         }
+        log::warn!(
+                "raft strip_log_to,log last index:{},strip index:{}",
+                last_end_index,
+                end_index
+            );
         let (index_dto, file_index_len, pop_index_count) =
             self.get_file_index_by_log_index(end_index)?;
         let empty_data = vec![0u8, 1];
@@ -599,15 +608,17 @@ impl LogInnerManager {
             RaftLogRequest::WriteBatch(list, record_start_index) => {
                 let mut mark = LogWriteMark::Success;
                 let mut last_index = record_start_index;
-                for record in &list[record_start_index..] {
-                    mark = self.write(record).await.unwrap_or(LogWriteMark::Failure);
-                    if let LogWriteMark::Failure = mark {
-                        break;
+                if list.len() > record_start_index {
+                    for record in &list[record_start_index..] {
+                        mark = self.write(record).await.unwrap_or(LogWriteMark::Failure);
+                        if let LogWriteMark::Failure = mark {
+                            break;
+                        }
+                        if let LogWriteMark::IndexEqualError = mark {
+                            break;
+                        }
+                        last_index += 1;
                     }
-                    if let LogWriteMark::IndexEqualError = mark {
-                        break;
-                    }
-                    last_index += 1;
                 }
                 let result = match mark {
                     LogWriteMark::Success => LogWriteResult::Success,
