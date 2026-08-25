@@ -5,17 +5,99 @@ use crate::naming::model::{Instance, ServiceKey};
 use crate::naming::service::{ServiceInfoDto, SubscriberInfoDto};
 use crate::naming::NamingUtils;
 use crate::utils::get_bool_from_string;
+use serde::de::{self, Deserializer};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+pub fn deserialize_opt_u32_lenient<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        Some(serde_json::Value::Number(n)) => Ok(n.as_u64().and_then(|v| Some(v as u32))),
+        Some(serde_json::Value::String(s)) => {
+            let s = s.trim();
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                s.parse::<u32>().map(Some).map_err(de::Error::custom)
+            }
+        }
+        Some(serde_json::Value::Null) | None => Ok(None),
+        _ => Err(de::Error::custom("expected u32 or string")),
+    }
+}
+
+pub fn deserialize_opt_f32_lenient<'de, D>(deserializer: D) -> Result<Option<f32>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        Some(serde_json::Value::Number(n)) => Ok(n.as_f64().map(|v| v as f32)),
+        Some(serde_json::Value::String(s)) => {
+            let s = s.trim();
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                s.parse::<f32>().map(Some).map_err(de::Error::custom)
+            }
+        }
+        Some(serde_json::Value::Null) | None => Ok(None),
+        _ => Err(de::Error::custom("expected float or string")),
+    }
+}
+
+pub fn deserialize_opt_bool_lenient<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        Some(serde_json::Value::Bool(b)) => Ok(Some(b)),
+        Some(serde_json::Value::String(s)) => match s.trim().to_lowercase().as_str() {
+            "true" | "1" => Ok(Some(true)),
+            "false" | "0" => Ok(Some(false)),
+            "" => Ok(None),
+            _ => Err(de::Error::custom("expected bool or boolean string")),
+        },
+        Some(serde_json::Value::Number(n)) => Ok(Some(n.as_i64().unwrap_or(0) != 0)),
+        Some(serde_json::Value::Null) | None => Ok(None),
+        _ => Err(de::Error::custom("expected bool or string")),
+    }
+}
+
+pub fn deserialize_opt_i64_lenient<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        Some(serde_json::Value::Number(n)) => Ok(n.as_i64()),
+        Some(serde_json::Value::String(s)) => {
+            let s = s.trim();
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                s.parse::<i64>().map(Some).map_err(de::Error::custom)
+            }
+        }
+        Some(serde_json::Value::Null) | None => Ok(None),
+        _ => Err(de::Error::custom("expected i64 or string")),
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceWebParams {
     pub ip: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_u32_lenient")]
     pub port: Option<u32>,
     pub namespace_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_f32_lenient")]
     pub weight: Option<f32>,
     pub enabled: Option<String>,
     pub healthy: Option<String>,
@@ -184,6 +266,7 @@ pub struct BeatRequest {
     pub ephemeral: Option<String>,
     pub beat: Option<String>,
     pub ip: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_u32_lenient")]
     pub port: Option<u32>,
 }
 
@@ -306,12 +389,17 @@ impl BeatRequest {
 pub struct BeatInfo {
     pub cluster: Option<String>,
     pub ip: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_u32_lenient")]
     pub port: Option<u32>,
     pub metadata: Option<HashMap<String, String>>,
+    #[serde(default, deserialize_with = "deserialize_opt_i64_lenient")]
     pub period: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_opt_bool_lenient")]
     pub scheduled: Option<bool>,
     pub service_name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_bool_lenient")]
     pub stopped: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_opt_f32_lenient")]
     pub weight: Option<f32>,
 }
 
@@ -407,3 +495,51 @@ impl ServiceInfoVo {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_beat_info_deserialization_string_values() {
+        let json_str = r#"{
+            "port": "8080",
+            "ip": "127.0.0.1",
+            "weight": "1.5",
+            "serviceName": "DEFAULT_GROUP@@test-service",
+            "cluster": "DEFAULT",
+            "scheduled": "false",
+            "stopped": "true",
+            "period": "5000",
+            "metadata": {"env": "test"}
+        }"#;
+
+        let beat_info: BeatInfo = serde_json::from_str(json_str).unwrap();
+        assert_eq!(beat_info.port, Some(8080));
+        assert_eq!(beat_info.ip, Some("127.0.0.1".to_string()));
+        assert_eq!(beat_info.weight, Some(1.5));
+        assert_eq!(beat_info.scheduled, Some(false));
+        assert_eq!(beat_info.stopped, Some(true));
+        assert_eq!(beat_info.period, Some(5000));
+    }
+
+    #[test]
+    fn test_beat_info_deserialization_number_values() {
+        let json_str = r#"{
+            "port": 8080,
+            "ip": "127.0.0.1",
+            "weight": 1.0,
+            "scheduled": false,
+            "stopped": false,
+            "period": 5000
+        }"#;
+
+        let beat_info: BeatInfo = serde_json::from_str(json_str).unwrap();
+        assert_eq!(beat_info.port, Some(8080));
+        assert_eq!(beat_info.weight, Some(1.0));
+        assert_eq!(beat_info.scheduled, Some(false));
+        assert_eq!(beat_info.stopped, Some(false));
+        assert_eq!(beat_info.period, Some(5000));
+    }
+}
+
